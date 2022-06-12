@@ -1,0 +1,240 @@
+library(ggplot2)
+library(tidyverse)
+library(lubridate)
+
+# Importing data
+data_nypd <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+head(data_nypd)
+
+# Creating data frame data_nypd. Initial cleaning: remove incident key and 
+# coordinate information.
+# Add a year column by extracting the year from OCCUR_DATE.
+data_nypd <- data_nypd %>%
+  select(-c(INCIDENT_KEY, X_COORD_CD, Y_COORD_CD, 
+            Latitude, Longitude, Lon_Lat)) %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+
+data_nypd$year <- year(data_nypd$OCCUR_DATE)
+
+
+# This analysis only considers 2006-2020. (Note: 2021 data is very interesting 
+# in light of the findings of this report, but they were published after 
+# the analysis was completed.
+data_nypd <- subset(data_nypd, year <= 2020) 
+
+# Inspecting data
+summary(data_nypd)
+data_nypd %>% count(BORO)
+data_nypd %>% count(LOCATION_DESC)
+data_nypd %>% filter(is.na(LOCATION_DESC))
+data_nypd %>% count(STATISTICAL_MURDER_FLAG)
+
+
+data_na <- data_nypd %>% filter(is.na(PERP_RACE) & is.na(PERP_SEX)) %>%
+  select(PERP_AGE_GROUP, PERP_SEX, PERP_RACE)
+view(data_na)
+
+data_nypd %>% count(VIC_AGE_GROUP)
+data_nypd %>% count(VIC_SEX)
+data_nypd %>% count(VIC_RACE)
+data_nypd %>% count(PERP_AGE_GROUP)
+data_nypd %>% count(PERP_SEX)
+data_nypd %>% count(PERP_RACE)
+
+#clean data
+# remove perp age = 940, 224, 1020; rename missing data as "UNKNOWN"
+# remove LOCATION_DESC and JURISDICTION_CODE columns
+data_nypd <- data_nypd %>% 
+  replace_na(list(PERP_AGE_GROUP = "UNKNOWN", 
+                  PERP_SEX = "UNKNOWN", 
+                  PERP_RACE = "UNKNOWN")) %>%
+  filter(PERP_AGE_GROUP != 940, PERP_AGE_GROUP != 224, PERP_AGE_GROUP != 1020)
+
+data_nypd["PERP_SEX"][data_nypd["PERP_SEX"] == "U"] <- "UNKNOWN"
+
+data_nypd <- data_nypd %>% 
+  select(-PRECINCT) %>%
+  select(-LOCATION_DESC) %>% 
+  select(-JURISDICTION_CODE)
+
+
+# Data analysis part 1: general trends of number of shootings and murders reported to 
+# NYPD in 2006 - 2020
+
+# Summarize number of shootings and murders by year
+daily_total <- data_nypd %>%
+  count(OCCUR_DATE) %>%
+  rename(no_shooting = n) 
+
+daily_murders <- data_nypd %>%
+  group_by(OCCUR_DATE) %>%
+  summarize(murders = sum(STATISTICAL_MURDER_FLAG))
+
+daily_total <- daily_total %>%
+  full_join(daily_murders)
+daily_total$year <- year(daily_total$OCCUR_DATE)
+
+yearly_total <- daily_total %>%
+  group_by(year) %>%
+  summarize(shootings = sum(no_shooting), murders = sum(murders)) 
+head(yearly_total)
+
+# Linear regression modelling for the number of shootings and murders 
+# per year for 2006-2020
+shoot_mod = lm(shootings ~ year, yearly_total)
+summary(shoot_mod)
+
+murder_mod = lm(murders~ year, yearly_total)
+summary(murder_mod)
+
+# Because 2020 shooting and murder count appear to be an anomaly, 
+# secondary linear regression models were made for the 2006-2019 period
+yearly_total_reduced <- yearly_total %>% filter(year < 2020)
+shoot_mod_rd = lm(shootings ~ year, yearly_total_reduced)
+summary(shoot_mod_rd)
+
+murder_mod_rd = lm(murders ~ year, yearly_total_reduced)
+summary(murder_mod_rd)
+
+# Fitted values for the linear regression models of shootings and murders are 
+# added to the yearly_total data frame. A second data frame, yearly_total_reduced 
+# is created to use the linear regression model from 2006-2019.
+yearly_total <- yearly_total %>% 
+  mutate(pred_shoot = round(predict(shoot_mod), 0), 
+         pred_murder = round(predict(murder_mod), 0))
+yearly_total_reduced <- yearly_total_reduced %>% 
+  mutate(pred_shoot = round(predict(shoot_mod_rd), 0), 
+         pred_murder = round(predict(murder_mod_rd), 0))
+
+# Data visualization of shootings and murders with linear regression models
+ggplot(yearly_total, aes(x=year, y = shootings)) + 
+  geom_point() +
+  geom_line(aes(x= year, y = pred_shoot), color = "goldenrod1") +
+  geom_line(data = yearly_total_reduced, aes(x = year, y = pred_shoot), 
+            color = "darkgreen") +
+  labs(title = "Shootings reported by the NYPD, 2006-2020") +
+  annotate("text", x = 2020, y = 2000, label = "2020", color = "darkred") +
+  annotate("text", x = 2018, y = 1400, label = "linear regression model", 
+           color = "darkgrey") + 
+  annotate("text", x = 2013.5, y = 1100, label = "linear regression model 
+           excluding 2020", color = "darkgrey") + 
+  theme_bw()
+
+ggplot(yearly_total, aes(x=year, y = murders)) + 
+  geom_point() +
+  geom_line(aes(x= year, y = pred_murder), color = "goldenrod1") +
+  geom_line(data = yearly_total_reduced, aes(x = year, y = pred_murder), 
+            color = "darkgreen") +
+  labs(title = "Murders reported by the NYPD, 2006-2020") +
+  annotate("text", x = 2020, y = 380, label = "2020", color = "darkred") +
+  annotate("text", x = 2018, y = 270, label = "linear regression model", 
+           color = "darkgrey") + 
+  annotate("text", x = 2013.5, y = 200, label = "linear regression model 
+           excluding 2020", color = "darkgrey") + 
+  theme_bw()
+
+
+# Analysis part 2: locations, victim and perpetrator characteristics associated 
+# with the 2020 increase in reported shootings.
+
+# Locations of the shootings: boroughs of NY
+# Data is normalized using the 2020 Census population data
+
+boro_count <- data_nypd %>% 
+  group_by(year) %>%
+  count(BORO) %>%
+  rename(shootings = n)
+
+pop_boro <- data.frame(BORO = c('BRONX', 'BROOKLYN', 'MANHATTAN', 'QUEENS', 'STATEN ISLAND'),
+                       POP = c(1472654, 2736074, 1694263, 2405464, 495747))
+boro_count <- left_join(boro_count, pop_boro, on='BORO')
+boro_count <- boro_count %>%
+  mutate(count_norm = shootings *100000/ POP)
+boro_count$count_norm <- round(boro_count$count_norm, 2)
+
+ggplot(boro_count, aes(x = year, y = count_norm, color = BORO)) + 
+  geom_point() +
+  geom_line() + 
+  ylab("number of shootings per 100,000") +
+  labs(title = "Boroughs of shootings reported by the NYPD, 2006 - 2020") +
+  theme_bw()
+
+# Victim characteristics: gender, age, race
+
+# A small number of VIC_SEX was 'U'. For a cleaner visualization, those rows were
+# filtered out.
+vic_sex_count <- data_nypd %>% 
+  group_by(year) %>%
+  count(VIC_SEX) %>%
+  filter(VIC_SEX != "U") %>%
+  rename(shootings = n)
+
+ggplot(vic_sex_count, aes(x = year, y = shootings, color = VIC_SEX)) + 
+  geom_point() +
+  geom_line() +
+  labs(title = "Gender of the shooting victims by year, as reported by the NYPD, 2006 - 2020") +
+  annotate("text", x = 2012, y = 250, label = "Female shooting victims") + 
+  annotate("text", x = 2015, y = 1500, label = "Male shooting victims") + 
+  theme_bw() +
+  theme(legend.position="none") 
+
+vic_age_count <- data_nypd %>% 
+  group_by(year) %>%
+  count(VIC_AGE_GROUP) %>%
+  rename(shootings = n)
+
+ggplot(vic_age_count, aes(x = year, y = shootings, color = VIC_AGE_GROUP)) + 
+  geom_point() +
+  geom_line() + 
+  labs(title = "Age of shooting victims by year, as reported by the NYPD, 2006 - 2020") +
+  theme_bw()
+
+vic_race_count <- data_nypd %>% 
+  group_by(year) %>%
+  count(VIC_RACE) %>%
+  rename(shootings = n)
+
+ggplot(vic_race_count, aes(x = year, y = shootings, color = VIC_RACE)) + 
+  geom_point() +
+  geom_line() + 
+  labs(title = "Race of shooting victims by year, as reported by the NYPD, 2006 - 2020") +
+  theme_bw()
+
+
+# Perpetrator characteristics
+perp_sex_count <- data_nypd %>% 
+  group_by(year) %>%
+  count(PERP_SEX) %>%
+  rename(shootings = n)
+
+ggplot(perp_sex_count, aes(x = year, y = shootings, color = PERP_SEX)) + 
+  geom_point() +
+  geom_line() + 
+  annotate("text", x = 2010, y = 100, label = "Female perps") + 
+  annotate("text", x = 2009, y = 1500, label = "Male perps") + 
+  annotate("text", x = 2010, y = 450, label = "Perp gender unknown") +
+  labs(title = "Gender of shooting perps by year, as reported by the NYPD, 2006 - 2020") +
+  theme_bw() +
+  theme(legend.position="None")
+
+perp_age_count <- data_nypd %>% 
+  group_by(year) %>%
+  count(PERP_AGE_GROUP) %>%
+  rename(shootings = n)
+
+ggplot(perp_age_count, aes(x = year, y = shootings, color = PERP_AGE_GROUP)) + 
+  geom_point() +
+  geom_line() + 
+  labs(title = "Age of shooting perps by year, as reported by the NYPD, 2006 - 2020") +
+  theme_bw()
+
+perp_race_count <- data_nypd %>% 
+  group_by(year) %>%
+  count(PERP_RACE) %>%
+  rename(shootings = n)
+
+ggplot(perp_race_count, aes(x = year, y = shootings, color = PERP_RACE)) + 
+  geom_point() +
+  geom_line() + 
+  labs(title = "Race of shooting perps by year, as reported by the NYPD, 2006 - 2020") +
+  theme_bw()
